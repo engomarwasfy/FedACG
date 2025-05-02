@@ -55,6 +55,7 @@ class Trainer():
         self.device = device
         self.model = model
 
+        self.sampler_type = trainer_args.sampler_type
         self.checkpoint_path = Path(self.args.checkpoint_path)
         mode = self.args.split.mode 
         if self.args.split.mode == 'dirichlet':
@@ -69,6 +70,7 @@ class Trainer():
         self.global_rounds = trainer_args.global_rounds
         self.lr = trainer_args.local_lr
         self.local_lr_decay = trainer_args.local_lr_decay
+        self.poison_percentage = trainer_args.poison_percentage
 
 
         self.clients: List[Client] = [client_type(self.args, client_index=c, model=copy.deepcopy(self.model)) for c in range(self.args.trainer.num_clients)]
@@ -118,6 +120,11 @@ class Trainer():
             local_dataset = DatasetSplitSubset(
                 self.datasets['train'],
                 idxs=self.local_dataset_split_ids[task['client_idx']],
+                sampler_type=self.sampler_type,
+                poison_percentage = self.poison_percentage if self.sampler_type == 'poison_classwise' else 0,
+
+
+
                 subset_classes=self.args.dataset.get('subset_classes'),
                 )
 
