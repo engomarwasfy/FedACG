@@ -64,7 +64,7 @@ def main(args : DictConfig) -> None:
     trainer_type = get_trainer_type(args)
     trainer = trainer_type(model=model, client_type=client_type, server=server, evaler_type=evaler_type,
                            datasets=datasets,
-                           device=device, args=args, config=None)
+                           device=device, args=args)
     trainer.train()
 
 
