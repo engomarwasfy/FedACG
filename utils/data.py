@@ -107,9 +107,10 @@ class DatasetSplitSubset(DatasetSplit):
         return len(self.indices)
 
     def __getitem__(self, item):
+        new_item = item
         if self.sampler is not None:
             item = next(self.sampler)
-        
+        new_item = item
         image, label = self.dataset[int(self.indices[item])]
         return image, label
     
