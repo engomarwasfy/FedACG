@@ -51,27 +51,23 @@ class Trainer():
                  multiprocessing: Dict = None,
                  **kwargs) -> None:
 
-        ### training config
         trainer_args = self.args.trainer
         self.args = args
         self.device = device
         self.model = model
-
         self.sampler_type = trainer_args.sampler_type
-
-        self.checkpoint_path = Path(self.args.checkpoint_path)
-        mode = self.args.split.mode 
-        if self.args.split.mode == 'dirichlet':
-            mode += str(self.args.split.alpha)
-        self.exp_path = self.checkpoint_path / self.args.dataset.name / mode / self.args.exp_name
-        logger.info(f"Exp path : {self.exp_path}")
         self.num_clients = trainer_args.num_clients
         self.participation_rate = trainer_args.participation_rate
         self.global_rounds = trainer_args.global_rounds
         self.lr = trainer_args.local_lr
         self.local_lr_decay = trainer_args.local_lr_decay
         self.poison_percentage = trainer_args.poison_percentage
-
+        self.checkpoint_path = Path(self.args.checkpoint_path)
+        mode = self.args.split.mode 
+        if self.args.split.mode == 'dirichlet':
+            mode += str(self.args.split.alpha)
+        self.exp_path = self.checkpoint_path / self.args.dataset.name / mode / self.args.exp_name
+        logger.info(f"Exp path : {self.exp_path}")
 
         self.clients: List[Client] = [client_type(self.args, client_index=c, model=copy.deepcopy(self.model)) for c in range(self.args.trainer.num_clients)]
         self.server = server
