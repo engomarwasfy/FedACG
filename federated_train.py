@@ -61,10 +61,10 @@ def main(args : DictConfig) -> None:
     datasets = build_datasets(args)
     evaler_type = get_evaler_type(args)
 
-    trainer_type = get_trainer_type(args)
-    trainer = trainer_type(model=model, client_type=client_type, server=server, evaler_type=evaler_type,
-                           datasets=datasets,
-                           device=device, args=args)
+    trainer_class = get_trainer_type(args)
+    trainer = trainer_class(model=model, client_type=client_type, server=server, evaler_type=evaler_type,
+                                datasets=datasets,
+                                device=device, args=args)
     trainer.train()
 
 
