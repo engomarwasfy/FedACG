@@ -73,8 +73,12 @@ class DatasetSplitSubset(DatasetSplit):
     """An abstract Dataset class wrapped around Pytorch Dataset class.
     """
 
-    def __init__(self, dataset, idxs, subset_classes=None):
+    def __init__(self, dataset, idxs, sampler_type, poison_percentage, subset_classes=None):
         self.dataset = dataset
+        self.sampler_type = sampler_type
+        self.poison_percentage = poison_percentage
+        from utils.sampler import PoisonClasswiseSampler
+        self.sampler = PoisonClasswiseSampler(data_source=self, num_instances=len(idxs), poison_percentage=self.poison_percentage) if self.sampler_type == 'poison_classwise' else None
 
         self.subset_classes = subset_classes
 
@@ -103,7 +107,10 @@ class DatasetSplitSubset(DatasetSplit):
         return len(self.indices)
 
     def __getitem__(self, item):
-        image, label = self.dataset[self.indices[item]]
+        if self.sampler is not None:
+            item = next(self.sampler)
+        
+        image, label = self.dataset[int(self.indices[item])]
         return image, label
     
     @property
