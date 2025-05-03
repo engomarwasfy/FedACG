@@ -74,6 +74,7 @@ class DatasetSplitSubset(DatasetSplit):
     """
 
     def __init__(self, dataset, idxs, sampler_type, poison_percentage, subset_classes=None):
+        self.indices = []
         self.dataset = dataset
         self.sampler_type = sampler_type
         self.poison_percentage = poison_percentage
@@ -82,7 +83,6 @@ class DatasetSplitSubset(DatasetSplit):
 
         self.subset_classes = subset_classes
 
-        self.class_dict = {}
         self.indices = []
 
         for idx in idxs:
