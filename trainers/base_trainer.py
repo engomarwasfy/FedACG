@@ -51,8 +51,8 @@ class Trainer():
                  multiprocessing: Dict = None,
                  **kwargs) -> None:
 
-        trainer_args = self.args.trainer
         self.args = args
+        trainer_args = self.args.trainer
         self.device = device
         self.model = model
         self.sampler_type = trainer_args.sampler_type
