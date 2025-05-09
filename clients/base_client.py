@@ -157,7 +157,13 @@ class Client():
                 try:
                     scaler.scale(loss).backward()
                     scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 10)
+                    if self.client_index in [1, 3]:
+                        print(f"Client {self.client_index} is poisoning the gradient.")
+                        for param in self.model.parameters():
+                            if param.grad is not None:
+                                param.grad.data *= -1
+
+ torch.nn.utils.clip_grad_norm_(self.model.parameters(), 10)
                     scaler.step(self.optimizer)
                     scaler.update()
 
