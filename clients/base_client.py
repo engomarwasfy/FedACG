@@ -163,8 +163,8 @@ class Client():
                             if param.grad is not None:
                                 param.grad.data *= -1
 
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 10)
                     scaler.step(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 10)
                     scaler.update()
 
                 except Exception as e:
