@@ -2,6 +2,12 @@
 # coding: utf-8
 import copy
 import time
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import logging
+import numpy as np
+from collections import defaultdict
 
 import matplotlib.pyplot as plt
 import torch.multiprocessing as mp
@@ -9,17 +15,16 @@ import gc
 
 from utils import *
 from utils.metrics import evaluate
+from utils.loss import FedDecorrLoss
 from models import build_encoder
 from typing import Callable, Dict, Tuple, Union, List
 from utils.logging_utils import AverageMeter
 from torch.cuda.amp import autocast, GradScaler
 from torch.utils.data import DataLoader
 
-import logging
-logger = logging.getLogger(__name__)
-
 from clients.build import CLIENT_REGISTRY
 
+logger = logging.getLogger(__name__)
 
 @CLIENT_REGISTRY.register()
 class Client():

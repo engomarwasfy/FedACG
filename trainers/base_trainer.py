@@ -23,7 +23,7 @@ from trainers.build import TRAINER_REGISTRY
 from servers import Server
 from clients import Client
 
-from utils import DatasetSplit, DatasetSplitSubset, get_dataset
+from utils import DatasetSplit, DatasetSplitSubset, get_dataset, PoisonedDatasetSplit
 from utils.logging_utils import AverageMeter
 
 from torch.utils.data import DataLoader
@@ -103,6 +103,17 @@ class Trainer():
                 local_g[key] = torch.zeros_like(local_g[key]).to('cpu')
             self.past_local_deltas = {net_i: copy.deepcopy(local_g) for net_i in range(self.num_clients)}
 
+        # Add tracking for poisoning effect over time
+        self.poisoning_history = {
+            'epoch': [],
+            'non_poisoned_acc': [],
+            'poisoned_acc': [],
+            'acc_difference': [],
+            'cat_acc_non_poisoned': [],
+            'dog_acc_non_poisoned': [],
+            'cat_acc_poisoned': [],
+            'dog_acc_poisoned': []
+        }
 
     def local_update(self, device, task_queue, result_queue):
         if self.args.multiprocessing:
@@ -115,10 +126,18 @@ class Trainer():
                 break
             client = self.clients[task['client_idx']]
 
-            local_dataset = DatasetSplitSubset(
-                self.datasets['train'],
-                idxs=self.local_dataset_split_ids[task['client_idx']],
-                subset_classes=self.args.dataset.get('subset_classes'),
+            # Use PoisonedDatasetSplit for clients 1 and 3
+            if task['client_idx'] in [1, 3]:
+                local_dataset = PoisonedDatasetSplit(
+                    self.datasets['train'],
+                    idxs=self.local_dataset_split_ids[task['client_idx']],
+                    client_id=task['client_idx']
+                )
+            else:
+                local_dataset = DatasetSplitSubset(
+                    self.datasets['train'],
+                    idxs=self.local_dataset_split_ids[task['client_idx']],
+                    subset_classes=self.args.dataset.get('subset_classes'),
                 )
 
             setup_inputs = {
@@ -255,6 +274,8 @@ class Trainer():
             # Terminate Processes
             terminate_processes(task_queues, processes)
 
+        # Print poisoning statistics
+        self._print_poisoning_stats()
         return
 
     def lr_update(self, epoch: int) -> None:
@@ -297,23 +318,194 @@ class Trainer():
         return
 
     def evaluate(self, epoch: int, local_datasets: List[torch.utils.data.Dataset] = None) -> Dict:
-
+        # Save current model state
+        current_model = copy.deepcopy(self.model)
+        
+        # Get overall accuracy first
         results = self.evaler.eval(model=copy.deepcopy(self.model), epoch=epoch)
-        acc = results["acc"]
+        total_acc = results["acc"]
+        
+        # Evaluate non-poisoned performance
+        print("\nEvaluating NON-POISONED model performance...")
+        non_poisoned_results = self._evaluate_cat_dog_accuracy(is_poisoned=False)
+        
+        # Restore model and evaluate poisoned performance
+        self.model = current_model
+        print("\nEvaluating POISONED model performance...")
+        poisoned_results = self._evaluate_cat_dog_accuracy(is_poisoned=True)
+        
+        # Calculate performance difference
+        acc_diff = poisoned_results['overall_acc'] - non_poisoned_results['overall_acc']
+        
+        # Update poisoning history
+        self.poisoning_history['epoch'].append(epoch)
+        self.poisoning_history['non_poisoned_acc'].append(non_poisoned_results['overall_acc'])
+        self.poisoning_history['poisoned_acc'].append(poisoned_results['overall_acc'])
+        self.poisoning_history['acc_difference'].append(acc_diff)
+        self.poisoning_history['cat_acc_non_poisoned'].append(non_poisoned_results['cat_acc'])
+        self.poisoning_history['dog_acc_non_poisoned'].append(non_poisoned_results['dog_acc'])
+        self.poisoning_history['cat_acc_poisoned'].append(poisoned_results['cat_acc'])
+        self.poisoning_history['dog_acc_poisoned'].append(poisoned_results['dog_acc'])
+        
+        print("\nOverall Performance Comparison:")
+        print("="*50)
+        print(f"Total Model Accuracy (All Classes): {total_acc:.2f}%")
+        print(f"Non-poisoned Accuracy (Cat/Dog): {non_poisoned_results['overall_acc']:.2f}%")
+        print(f"Poisoned Accuracy (Cat/Dog): {poisoned_results['overall_acc']:.2f}%")
+        print(f"Accuracy Difference: {acc_diff:+.2f}%")
+        print("\nClass-wise Performance Change (Cat/Dog):")
+        print(f"Cat Accuracy: {non_poisoned_results['cat_acc']:.2f}% -> {poisoned_results['cat_acc']:.2f}%")
+        print(f"Dog Accuracy: {non_poisoned_results['dog_acc']:.2f}% -> {poisoned_results['dog_acc']:.2f}%")
+        print("="*50 + "\n")
 
-        wandb_dict = {
-            f"acc/{self.args.dataset.name}": acc,
-            }
-
-        logger.warning(f'[Epoch {epoch}] Test Accuracy: {acc:.2f}%')
-
+        # Keep original logging
+        logger.warning(f'[Epoch {epoch}] Test Accuracy: {total_acc:.2f}%')
         plt.close()
+        
+        wandb_dict = {
+            f"acc/{self.args.dataset.name}": total_acc,
+            "poisoning/non_poisoned_acc": non_poisoned_results['overall_acc'],
+            "poisoning/poisoned_acc": poisoned_results['overall_acc'],
+            "poisoning/acc_difference": acc_diff,
+            "poisoning/cat_acc_non_poisoned": non_poisoned_results['cat_acc'],
+            "poisoning/dog_acc_non_poisoned": non_poisoned_results['dog_acc'],
+            "poisoning/cat_acc_poisoned": poisoned_results['cat_acc'],
+            "poisoning/dog_acc_poisoned": poisoned_results['dog_acc']
+        }
         
         self.wandb_log(wandb_dict, step=epoch)
         return {
-            "acc": acc
+            "acc": total_acc,
+            "non_poisoned_acc": non_poisoned_results['overall_acc'],
+            "poisoned_acc": poisoned_results['overall_acc'],
+            "acc_difference": acc_diff,
+            "poisoning_history": self.poisoning_history
         }
-    
+
+    def _evaluate_cat_dog_accuracy(self, is_poisoned=True) -> Dict:
+        """Evaluate accuracy specifically on cat and dog classes."""
+        # Move model to the correct device
+        self.model = self.model.to(self.eval_device)
+        self.model.eval()
+        correct = 0
+        total = 0
+        cat_class = 3
+        dog_class = 5
+        
+        # Track predictions and correct predictions per class
+        predictions = {cat_class: 0, dog_class: 0}
+        actual = {cat_class: 0, dog_class: 0}
+        correct_predictions = {cat_class: 0, dog_class: 0}
+        
+        # Initialize confusion matrix
+        confusion_matrix = {
+            cat_class: {cat_class: 0, dog_class: 0},
+            dog_class: {cat_class: 0, dog_class: 0}
+        }
+        
+        with torch.no_grad():
+            for images, labels in self.evaler.test_loader:
+                images, labels = images.to(self.eval_device), labels.to(self.eval_device)
+                
+                # Only evaluate on cat and dog images
+                mask = (labels == cat_class) | (labels == dog_class)
+                if not mask.any():
+                    continue
+                    
+                images = images[mask]
+                labels = labels[mask]
+                outputs = self.model(images)
+                _, predicted = outputs["logit"].max(1)
+                
+                # Keep original accuracy calculation
+                total += labels.size(0)
+                correct += predicted.eq(labels).sum().item()
+                
+                # Additional tracking for detailed analysis
+                for label, pred in zip(labels, predicted):
+                    label_item = label.item()
+                    pred_item = pred.item()
+                    actual[label_item] += 1
+                    if pred_item in [cat_class, dog_class]:
+                        predictions[pred_item] += 1
+                        if label_item == pred_item:
+                            correct_predictions[label_item] += 1
+                        confusion_matrix[label_item][pred_item] += 1
+        
+        # Calculate class-wise accuracy
+        cat_accuracy = 100. * correct_predictions[cat_class] / actual[cat_class] if actual[cat_class] > 0 else 0
+        dog_accuracy = 100. * correct_predictions[dog_class] / actual[dog_class] if actual[dog_class] > 0 else 0
+        overall_accuracy = 100. * correct / total if total > 0 else 0
+        
+        # Print detailed analysis
+        status = "POISONED" if is_poisoned else "NON-POISONED"
+        print(f"\nDetailed Analysis for Cat/Dog Classes ({status}):")
+        print("="*50)
+        print("Class-wise Accuracy:")
+        print(f"Cat Class Accuracy: {cat_accuracy:.2f}%")
+        print(f"Dog Class Accuracy: {dog_accuracy:.2f}%")
+        print(f"Overall Accuracy: {overall_accuracy:.2f}%")
+        print("\nPrediction Distribution:")
+        print(f"Actual Cats: {actual[cat_class]}, Predicted as Cats: {predictions[cat_class]}")
+        print(f"Actual Dogs: {actual[dog_class]}, Predicted as Dogs: {predictions[dog_class]}")
+        print("\nConfusion Matrix:")
+        print("                Predicted")
+        print("Actual    Cat    Dog")
+        print(f"Cat      {confusion_matrix[cat_class][cat_class]:<6d} {confusion_matrix[cat_class][dog_class]:<6d}")
+        print(f"Dog      {confusion_matrix[dog_class][cat_class]:<6d} {confusion_matrix[dog_class][dog_class]:<6d}")
+        print("\nMisclassification Analysis:")
+        print(f"Cat->Dog misclassifications: {confusion_matrix[cat_class][dog_class]}")
+        print(f"Dog->Cat misclassifications: {confusion_matrix[dog_class][cat_class]}")
+        print("="*50 + "\n")
+        
+        # Move model back to CPU
+        self.model = self.model.to('cpu')
+                
+        return {
+            'overall_acc': overall_accuracy,
+            'cat_acc': cat_accuracy,
+            'dog_acc': dog_accuracy,
+            'confusion_matrix': confusion_matrix
+        }
+
+    def _print_poisoning_stats(self):
+        """Print statistics about the poisoning attack."""
+        print("\n" + "="*50)
+        print("POISONING ATTACK STATISTICS")
+        print("="*50)
+        
+        # Get poisoned clients' datasets
+        poisoned_clients = [1, 3]
+        total_poisoned = 0
+        
+        for client_idx in poisoned_clients:
+            if client_idx < len(self.clients):
+                dataset = self.clients[client_idx].loader.dataset
+                if hasattr(dataset, 'poisoned_count'):
+                    total_poisoned += dataset.poisoned_count
+                    print(f"Client {client_idx}: Poisoned {dataset.poisoned_count} labels")
+        
+        print(f"\nTotal labels poisoned: {total_poisoned}")
+        
+        # Print final performance comparison
+        if self.poisoning_history['epoch']:
+            final_epoch = self.poisoning_history['epoch'][-1]
+            print("\nFinal Performance Comparison:")
+            print(f"Total Model Accuracy: {self.evaler.eval(model=self.model, epoch=final_epoch)['acc']:.2f}%")
+            print(f"Non-poisoned Cat/Dog Accuracy: {self.poisoning_history['non_poisoned_acc'][-1]:.2f}%")
+            print(f"Poisoned Cat/Dog Accuracy: {self.poisoning_history['poisoned_acc'][-1]:.2f}%")
+            print(f"Final Accuracy Difference: {self.poisoning_history['acc_difference'][-1]:+.2f}%")
+            
+            print("\nClass-wise Final Performance:")
+            print(f"Cat Accuracy: {self.poisoning_history['cat_acc_non_poisoned'][-1]:.2f}% -> {self.poisoning_history['cat_acc_poisoned'][-1]:.2f}%")
+            print(f"Dog Accuracy: {self.poisoning_history['dog_acc_non_poisoned'][-1]:.2f}% -> {self.poisoning_history['dog_acc_poisoned'][-1]:.2f}%")
+            
+            # Calculate average impact
+            avg_acc_diff = sum(self.poisoning_history['acc_difference']) / len(self.poisoning_history['acc_difference'])
+            print(f"\nAverage Impact Across Training: {avg_acc_diff:+.2f}%")
+        
+        print("="*50 + "\n")
+
 
 
 

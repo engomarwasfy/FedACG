@@ -10,9 +10,9 @@ import json
 from collections import OrderedDict
 
 import numpy as np
+import logging
 
-__all__ = ['DatasetSplit', 'DatasetSplitSubset', 'DatasetSplitMultiView', 'get_dataset', 'MultiViewDataInjector', 'GaussianBlur', 'TransformTwice'
-                                                                                                            ]
+__all__ = ['DatasetSplit', 'DatasetSplitSubset', 'DatasetSplitMultiView', 'get_dataset', 'MultiViewDataInjector', 'GaussianBlur', 'TransformTwice', 'PoisonedDatasetSplit']
 
 create_dataset_log = False
 
@@ -234,3 +234,59 @@ class GaussianBlur(object):
 
         self.pil_to_tensor = transforms.ToTensor()
         self.tensor_to_pil = transforms.ToPILImage()
+
+class PoisonedDatasetSplit(DatasetSplit):
+    """A poisoned dataset class that swaps labels between cats and dogs for specific clients."""
+    
+    def __init__(self, dataset, idxs, client_id):
+        super().__init__(dataset, idxs)
+        self.client_id = client_id
+        # CIFAR-10 class indices: cat=3, dog=5
+        self.cat_class = 3
+        self.dog_class = 5
+        self.poisoned_count = 0  # Counter for poisoned labels
+        
+        # Update class dictionary to reflect swapped labels
+        if self.client_id in [1, 3]:
+            cat_count = self.class_dict.get(str(self.cat_class), 0)
+            dog_count = self.class_dict.get(str(self.dog_class), 0)
+            self.class_dict[str(self.cat_class)] = dog_count
+            self.class_dict[str(self.dog_class)] = cat_count
+            print(f"\n{'='*50}")
+            print(f"POISONING INITIALIZED FOR CLIENT {self.client_id}")
+            print(f"Swapped labels - Cat count: {cat_count} -> {dog_count}, Dog count: {dog_count} -> {cat_count}")
+            print(f"Total labels to be poisoned: {cat_count + dog_count}")
+            print(f"{'='*50}\n")
+            
+            # Verify initial label distribution
+            self._verify_label_distribution("Initial")
+        
+    def _verify_label_distribution(self, stage="Current"):
+        """Verify the distribution of labels in the dataset."""
+        if self.client_id in [1, 3]:
+            print(f"\n{stage} Label Distribution for Client {self.client_id}:")
+            print(f"Cat (class {self.cat_class}): {self.class_dict[str(self.cat_class)]}")
+            print(f"Dog (class {self.dog_class}): {self.class_dict[str(self.dog_class)]}")
+            print(f"Total poisoned labels: {self.poisoned_count}\n")
+        
+    def __getitem__(self, item):
+        image, label = self.dataset[self.idxs[item]]
+        
+        # Only poison clients 1 and 3
+        if self.client_id in [1, 3]:
+            original_label = label
+            # Swap cat and dog labels
+            if label == self.cat_class:
+                label = self.dog_class
+                self.poisoned_count += 1
+                print(f"Client {self.client_id}: Poisoned label {original_label} (cat) -> {label} (dog) [Total poisoned: {self.poisoned_count}]")
+            elif label == self.dog_class:
+                label = self.cat_class
+                self.poisoned_count += 1
+                print(f"Client {self.client_id}: Poisoned label {original_label} (dog) -> {label} (cat) [Total poisoned: {self.poisoned_count}]")
+                
+            # Periodically verify label distribution
+            if self.poisoned_count % 100 == 0:
+                self._verify_label_distribution()
+                
+        return image, label

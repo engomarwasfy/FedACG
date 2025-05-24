@@ -4,6 +4,7 @@ import copy
 import time
 
 import matplotlib.pyplot as plt
+import torch
 import torch.multiprocessing as mp
 from sklearn.manifold import TSNE
 
