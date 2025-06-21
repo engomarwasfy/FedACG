@@ -106,14 +106,25 @@ class Trainer():
         # Add tracking for poisoning effect over time
         self.poisoning_history = {
             'epoch': [],
+            'total_acc': [],  # Keep original total accuracy
             'non_poisoned_acc': [],
             'poisoned_acc': [],
             'acc_difference': [],
-            'cat_acc_non_poisoned': [],
-            'dog_acc_non_poisoned': [],
-            'cat_acc_poisoned': [],
-            'dog_acc_poisoned': []
         }
+        
+        # Initialize superclass-specific metrics
+        for superclass_pair in [
+            ('aquatic_mammals', 'vehicles_1'),
+            ('fish', 'household_electrical'),
+            ('flowers', 'large_carnivores'),
+            ('food_containers', 'insects'),
+            ('fruit_vegetables', 'reptiles')
+        ]:
+            class1, class2 = superclass_pair
+            self.poisoning_history[f'{class1}_acc_non_poisoned'] = []
+            self.poisoning_history[f'{class2}_acc_non_poisoned'] = []
+            self.poisoning_history[f'{class1}_acc_poisoned'] = []
+            self.poisoning_history[f'{class2}_acc_poisoned'] = []
 
     def local_update(self, device, task_queue, result_queue):
         if self.args.multiprocessing:
@@ -320,95 +331,157 @@ class Trainer():
     def evaluate(self, epoch: int, local_datasets: List[torch.utils.data.Dataset] = None) -> Dict:
         # Save current model state
         current_model = copy.deepcopy(self.model)
-        
+
         # Get overall accuracy first
         results = self.evaler.eval(model=copy.deepcopy(self.model), epoch=epoch)
         total_acc = results["acc"]
         
         # Evaluate non-poisoned performance
         print("\nEvaluating NON-POISONED model performance...")
-        non_poisoned_results = self._evaluate_cat_dog_accuracy(is_poisoned=False)
+        non_poisoned_results = self._evaluate_superclass_accuracy(is_poisoned=False)
         
         # Restore model and evaluate poisoned performance
         self.model = current_model
         print("\nEvaluating POISONED model performance...")
-        poisoned_results = self._evaluate_cat_dog_accuracy(is_poisoned=True)
+        poisoned_results = self._evaluate_superclass_accuracy(is_poisoned=True)
         
         # Calculate performance difference
         acc_diff = poisoned_results['overall_acc'] - non_poisoned_results['overall_acc']
         
         # Update poisoning history
         self.poisoning_history['epoch'].append(epoch)
+        self.poisoning_history['total_acc'].append(total_acc)  # Keep original total accuracy
         self.poisoning_history['non_poisoned_acc'].append(non_poisoned_results['overall_acc'])
         self.poisoning_history['poisoned_acc'].append(poisoned_results['overall_acc'])
         self.poisoning_history['acc_difference'].append(acc_diff)
-        self.poisoning_history['cat_acc_non_poisoned'].append(non_poisoned_results['cat_acc'])
-        self.poisoning_history['dog_acc_non_poisoned'].append(non_poisoned_results['dog_acc'])
-        self.poisoning_history['cat_acc_poisoned'].append(poisoned_results['cat_acc'])
-        self.poisoning_history['dog_acc_poisoned'].append(poisoned_results['dog_acc'])
+        
+        # Update superclass-specific metrics
+        for superclass_pair in [
+            ('aquatic_mammals', 'vehicles_1'),
+            ('fish', 'household_electrical'),
+            ('flowers', 'large_carnivores'),
+            ('food_containers', 'insects'),
+            ('fruit_vegetables', 'reptiles')
+        ]:
+            class1, class2 = superclass_pair
+            self.poisoning_history[f'{class1}_acc_non_poisoned'].append(non_poisoned_results[f'{class1}_acc'])
+            self.poisoning_history[f'{class2}_acc_non_poisoned'].append(non_poisoned_results[f'{class2}_acc'])
+            self.poisoning_history[f'{class1}_acc_poisoned'].append(poisoned_results[f'{class1}_acc'])
+            self.poisoning_history[f'{class2}_acc_poisoned'].append(poisoned_results[f'{class2}_acc'])
         
         print("\nOverall Performance Comparison:")
         print("="*50)
         print(f"Total Model Accuracy (All Classes): {total_acc:.2f}%")
-        print(f"Non-poisoned Accuracy (Cat/Dog): {non_poisoned_results['overall_acc']:.2f}%")
-        print(f"Poisoned Accuracy (Cat/Dog): {poisoned_results['overall_acc']:.2f}%")
+        print(f"Non-poisoned Accuracy (Superclasses): {non_poisoned_results['overall_acc']:.2f}%")
+        print(f"Poisoned Accuracy (Superclasses): {poisoned_results['overall_acc']:.2f}%")
         print(f"Accuracy Difference: {acc_diff:+.2f}%")
-        print("\nClass-wise Performance Change (Cat/Dog):")
-        print(f"Cat Accuracy: {non_poisoned_results['cat_acc']:.2f}% -> {poisoned_results['cat_acc']:.2f}%")
-        print(f"Dog Accuracy: {non_poisoned_results['dog_acc']:.2f}% -> {poisoned_results['dog_acc']:.2f}%")
+        
+        print("\nClass-wise Performance Change:")
+        for superclass_pair in [
+            ('aquatic_mammals', 'vehicles_1'),
+            ('fish', 'household_electrical'),
+            ('flowers', 'large_carnivores'),
+            ('food_containers', 'insects'),
+            ('fruit_vegetables', 'reptiles')
+        ]:
+            class1, class2 = superclass_pair
+            print(f"\n{class1.replace('_', ' ').title()} vs {class2.replace('_', ' ').title()}:")
+            print(f"{class1.replace('_', ' ').title()}: {non_poisoned_results[f'{class1}_acc']:.2f}% -> {poisoned_results[f'{class1}_acc']:.2f}%")
+            print(f"{class2.replace('_', ' ').title()}: {non_poisoned_results[f'{class2}_acc']:.2f}% -> {poisoned_results[f'{class2}_acc']:.2f}%")
         print("="*50 + "\n")
 
         # Keep original logging
         logger.warning(f'[Epoch {epoch}] Test Accuracy: {total_acc:.2f}%')
         plt.close()
         
+        # Prepare wandb logging dictionary
         wandb_dict = {
-            f"acc/{self.args.dataset.name}": total_acc,
+            f"acc/{self.args.dataset.name}": total_acc,  # Keep original accuracy metric
+            "poisoning/total_acc": total_acc,  # Add total accuracy to poisoning metrics
             "poisoning/non_poisoned_acc": non_poisoned_results['overall_acc'],
             "poisoning/poisoned_acc": poisoned_results['overall_acc'],
             "poisoning/acc_difference": acc_diff,
-            "poisoning/cat_acc_non_poisoned": non_poisoned_results['cat_acc'],
-            "poisoning/dog_acc_non_poisoned": non_poisoned_results['dog_acc'],
-            "poisoning/cat_acc_poisoned": poisoned_results['cat_acc'],
-            "poisoning/dog_acc_poisoned": poisoned_results['dog_acc']
         }
+        
+        # Add superclass-specific metrics to wandb
+        for superclass_pair in [
+            ('aquatic_mammals', 'vehicles_1'),
+            ('fish', 'household_electrical'),
+            ('flowers', 'large_carnivores'),
+            ('food_containers', 'insects'),
+            ('fruit_vegetables', 'reptiles')
+        ]:
+            class1, class2 = superclass_pair
+            wandb_dict.update({
+                f"poisoning/{class1}_acc_non_poisoned": non_poisoned_results[f'{class1}_acc'],
+                f"poisoning/{class2}_acc_non_poisoned": non_poisoned_results[f'{class2}_acc'],
+                f"poisoning/{class1}_acc_poisoned": poisoned_results[f'{class1}_acc'],
+                f"poisoning/{class2}_acc_poisoned": poisoned_results[f'{class2}_acc']
+            })
         
         self.wandb_log(wandb_dict, step=epoch)
         return {
-            "acc": total_acc,
+            "acc": total_acc,  # Keep original accuracy in return dict
+            "total_acc": total_acc,  # Add total accuracy to poisoning metrics
             "non_poisoned_acc": non_poisoned_results['overall_acc'],
             "poisoned_acc": poisoned_results['overall_acc'],
             "acc_difference": acc_diff,
             "poisoning_history": self.poisoning_history
         }
 
-    def _evaluate_cat_dog_accuracy(self, is_poisoned=True) -> Dict:
-        """Evaluate accuracy specifically on cat and dog classes."""
+    def _evaluate_superclass_accuracy(self, is_poisoned=True) -> Dict:
+        """Evaluate accuracy specifically on the superclass pairs."""
         # Move model to the correct device
         self.model = self.model.to(self.eval_device)
         self.model.eval()
         correct = 0
         total = 0
-        cat_class = 3
-        dog_class = 5
+        
+        # Define superclass mappings
+        superclass_mappings = {
+            'aquatic_mammals': [4, 36, 45, 63, 72],  # beaver, dolphin, otter, seal, whale
+            'vehicles_1': [8, 13, 48, 58, 79],       # bicycle, bus, motorcycle, pickup_truck, train
+            'fish': [1, 32, 44, 55, 72],             # aquarium_fish, flatfish, ray, shark, trout
+            'household_electrical': [16, 23, 35, 67, 73],  # clock, keyboard, lamp, telephone, television
+            'flowers': [54, 62, 70, 82, 92],         # orchids, poppies, roses, sunflowers, tulips
+            'large_carnivores': [3, 41, 42, 74, 80], # bear, leopard, lion, tiger, wolf
+            'food_containers': [6, 10, 14, 18, 24],  # bottles, bowls, cans, cups, plates
+            'insects': [7, 11, 17, 19, 25],          # bee, beetle, butterfly, caterpillar, cockroach
+            'fruit_vegetables': [0, 51, 53, 57, 75], # apples, mushrooms, oranges, pears, sweet_peppers
+            'reptiles': [29, 30, 40, 71, 76]         # crocodile, dinosaur, lizard, snake, turtle
+        }
         
         # Track predictions and correct predictions per class
-        predictions = {cat_class: 0, dog_class: 0}
-        actual = {cat_class: 0, dog_class: 0}
-        correct_predictions = {cat_class: 0, dog_class: 0}
+        all_classes = []
+        for classes in superclass_mappings.values():
+            all_classes.extend(classes)
         
-        # Initialize confusion matrix
-        confusion_matrix = {
-            cat_class: {cat_class: 0, dog_class: 0},
-            dog_class: {cat_class: 0, dog_class: 0}
-        }
+        predictions = {cls: 0 for cls in all_classes}
+        actual = {cls: 0 for cls in all_classes}
+        correct_predictions = {cls: 0 for cls in all_classes}
+        
+        # Initialize confusion matrix for each superclass pair
+        confusion_matrices = {}
+        for superclass_pair in [
+            ('aquatic_mammals', 'vehicles_1'),
+            ('fish', 'household_electrical'),
+            ('flowers', 'large_carnivores'),
+            ('food_containers', 'insects'),
+            ('fruit_vegetables', 'reptiles')
+        ]:
+            class1, class2 = superclass_pair
+            classes1 = superclass_mappings[class1]
+            classes2 = superclass_mappings[class2]
+            confusion_matrices[superclass_pair] = {
+                i: {j: 0 for j in classes1 + classes2} for i in classes1 + classes2
+            }
         
         with torch.no_grad():
             for images, labels in self.evaler.test_loader:
                 images, labels = images.to(self.eval_device), labels.to(self.eval_device)
                 
-                # Only evaluate on cat and dog images
-                mask = (labels == cat_class) | (labels == dog_class)
+                # Only evaluate on our superclass images
+                mask = torch.tensor([label.item() in all_classes for label in labels], device=self.eval_device)
                 if not mask.any():
                     continue
                     
@@ -426,47 +499,68 @@ class Trainer():
                     label_item = label.item()
                     pred_item = pred.item()
                     actual[label_item] += 1
-                    if pred_item in [cat_class, dog_class]:
+                    if pred_item in all_classes:
                         predictions[pred_item] += 1
                         if label_item == pred_item:
                             correct_predictions[label_item] += 1
-                        confusion_matrix[label_item][pred_item] += 1
+                        
+                        # Update confusion matrices
+                        for superclass_pair in [
+                            ('aquatic_mammals', 'vehicles_1'),
+                            ('fish', 'household_electrical'),
+                            ('flowers', 'large_carnivores'),
+                            ('food_containers', 'insects'),
+                            ('fruit_vegetables', 'reptiles')
+                        ]:
+                            class1, class2 = superclass_pair
+                            classes1 = superclass_mappings[class1]
+                            classes2 = superclass_mappings[class2]
+                            if label_item in classes1 + classes2 and pred_item in classes1 + classes2:
+                                confusion_matrices[superclass_pair][label_item][pred_item] += 1
         
-        # Calculate class-wise accuracy
-        cat_accuracy = 100. * correct_predictions[cat_class] / actual[cat_class] if actual[cat_class] > 0 else 0
-        dog_accuracy = 100. * correct_predictions[dog_class] / actual[dog_class] if actual[dog_class] > 0 else 0
-        overall_accuracy = 100. * correct / total if total > 0 else 0
+        # Calculate class-wise accuracy for each superclass
+        results = {'overall_acc': 100. * correct / total if total > 0 else 0}
+        for superclass, classes in superclass_mappings.items():
+            acc = sum(100. * correct_predictions[cls] / actual[cls] for cls in classes if actual[cls] > 0) / len(classes)
+            results[f'{superclass}_acc'] = acc
         
         # Print detailed analysis
         status = "POISONED" if is_poisoned else "NON-POISONED"
-        print(f"\nDetailed Analysis for Cat/Dog Classes ({status}):")
+        print(f"\nDetailed Analysis for Superclasses ({status}):")
         print("="*50)
         print("Class-wise Accuracy:")
-        print(f"Cat Class Accuracy: {cat_accuracy:.2f}%")
-        print(f"Dog Class Accuracy: {dog_accuracy:.2f}%")
-        print(f"Overall Accuracy: {overall_accuracy:.2f}%")
-        print("\nPrediction Distribution:")
-        print(f"Actual Cats: {actual[cat_class]}, Predicted as Cats: {predictions[cat_class]}")
-        print(f"Actual Dogs: {actual[dog_class]}, Predicted as Dogs: {predictions[dog_class]}")
-        print("\nConfusion Matrix:")
-        print("                Predicted")
-        print("Actual    Cat    Dog")
-        print(f"Cat      {confusion_matrix[cat_class][cat_class]:<6d} {confusion_matrix[cat_class][dog_class]:<6d}")
-        print(f"Dog      {confusion_matrix[dog_class][cat_class]:<6d} {confusion_matrix[dog_class][dog_class]:<6d}")
-        print("\nMisclassification Analysis:")
-        print(f"Cat->Dog misclassifications: {confusion_matrix[cat_class][dog_class]}")
-        print(f"Dog->Cat misclassifications: {confusion_matrix[dog_class][cat_class]}")
+        for superclass, classes in superclass_mappings.items():
+            print(f"{superclass.replace('_', ' ').title()}: {results[f'{superclass}_acc']:.2f}%")
+        print(f"Overall Accuracy: {results['overall_acc']:.2f}%")
+        
+        print("\nConfusion Matrices:")
+        for superclass_pair in [
+            ('aquatic_mammals', 'vehicles_1'),
+            ('fish', 'household_electrical'),
+            ('flowers', 'large_carnivores'),
+            ('food_containers', 'insects'),
+            ('fruit_vegetables', 'reptiles')
+        ]:
+            class1, class2 = superclass_pair
+            print(f"\n{class1.replace('_', ' ').title()} vs {class2.replace('_', ' ').title()}:")
+            classes1 = superclass_mappings[class1]
+            classes2 = superclass_mappings[class2]
+            
+            # Print confusion matrix header
+            print("                Predicted")
+            print("Actual    " + "    ".join(str(c) for c in classes1 + classes2))
+            
+            # Print confusion matrix rows
+            for cls in classes1 + classes2:
+                row = [confusion_matrices[superclass_pair][cls][pred] for pred in classes1 + classes2]
+                print(f"{cls:<8d} " + " ".join(f"{val:<8d}" for val in row))
+        
         print("="*50 + "\n")
         
         # Move model back to CPU
         self.model = self.model.to('cpu')
                 
-        return {
-            'overall_acc': overall_accuracy,
-            'cat_acc': cat_accuracy,
-            'dog_acc': dog_accuracy,
-            'confusion_matrix': confusion_matrix
-        }
+        return results
 
     def _print_poisoning_stats(self):
         """Print statistics about the poisoning attack."""
@@ -491,14 +585,23 @@ class Trainer():
         if self.poisoning_history['epoch']:
             final_epoch = self.poisoning_history['epoch'][-1]
             print("\nFinal Performance Comparison:")
-            print(f"Total Model Accuracy: {self.evaler.eval(model=self.model, epoch=final_epoch)['acc']:.2f}%")
-            print(f"Non-poisoned Cat/Dog Accuracy: {self.poisoning_history['non_poisoned_acc'][-1]:.2f}%")
-            print(f"Poisoned Cat/Dog Accuracy: {self.poisoning_history['poisoned_acc'][-1]:.2f}%")
+            print(f"Total Model Accuracy (All Classes): {self.poisoning_history['total_acc'][-1]:.2f}%")
+            print(f"Non-poisoned Superclass Accuracy: {self.poisoning_history['non_poisoned_acc'][-1]:.2f}%")
+            print(f"Poisoned Superclass Accuracy: {self.poisoning_history['poisoned_acc'][-1]:.2f}%")
             print(f"Final Accuracy Difference: {self.poisoning_history['acc_difference'][-1]:+.2f}%")
             
             print("\nClass-wise Final Performance:")
-            print(f"Cat Accuracy: {self.poisoning_history['cat_acc_non_poisoned'][-1]:.2f}% -> {self.poisoning_history['cat_acc_poisoned'][-1]:.2f}%")
-            print(f"Dog Accuracy: {self.poisoning_history['dog_acc_non_poisoned'][-1]:.2f}% -> {self.poisoning_history['dog_acc_poisoned'][-1]:.2f}%")
+            for superclass_pair in [
+                ('aquatic_mammals', 'vehicles_1'),
+                ('fish', 'household_electrical'),
+                ('flowers', 'large_carnivores'),
+                ('food_containers', 'insects'),
+                ('fruit_vegetables', 'reptiles')
+            ]:
+                class1, class2 = superclass_pair
+                print(f"\n{class1.replace('_', ' ').title()} vs {class2.replace('_', ' ').title()}:")
+                print(f"{class1.replace('_', ' ').title()}: {self.poisoning_history[f'{class1}_acc_non_poisoned'][-1]:.2f}% -> {self.poisoning_history[f'{class1}_acc_poisoned'][-1]:.2f}%")
+                print(f"{class2.replace('_', ' ').title()}: {self.poisoning_history[f'{class2}_acc_non_poisoned'][-1]:.2f}% -> {self.poisoning_history[f'{class2}_acc_poisoned'][-1]:.2f}%")
             
             # Calculate average impact
             avg_acc_diff = sum(self.poisoning_history['acc_difference']) / len(self.poisoning_history['acc_difference'])

@@ -6,7 +6,8 @@ from .loss import *
 from .sampler import *
 from .misc import *
 from .io_utils import *
-from utils.data import DatasetSplit, DatasetSplitSubset, get_dataset, PoisonedDatasetSplit
+from utils.data import DatasetSplit, DatasetSplitSubset, get_dataset
+from utils.dataset import PoisonedDatasetSplit
 
 __all__ = [
     'DatasetSplit',
